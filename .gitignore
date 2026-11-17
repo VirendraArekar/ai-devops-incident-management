@@ -1,0 +1,28 @@
+# Java & Maven
+backend/target/
+*.class
+*.jar
+*.war
+.m2/
+
+# Python & AI Engine
+ai-engine/venv/
+venv/
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.coverage
+htmlcov/
+*.egg-info/
+.env
+
+# Node & Frontend
+frontend/node_modules/
+node_modules/
+frontend/dist/
+dist/
+.DS_Store
+.idea/
+.vscode/
+*.log
