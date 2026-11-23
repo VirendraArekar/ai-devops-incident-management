@@ -1,0 +1,42 @@
+groups:
+  - name: devops_incident_alerts
+    rules:
+      - alert: HTTP500Spike
+        expr: (sum(rate(payment_service_requests_total{status="500"}[1m])) / sum(rate(payment_service_requests_total[1m]))) * 100 > 5
+        for: 15s
+        labels:
+          severity: SEV_1
+          service: payment-service
+        annotations:
+          summary: "HTTP 500 error rate exceeding 5% threshold"
+          description: "Payment Service HTTP 500 rate escalated to {{ $value }}%."
+
+      - alert: DatabasePoolExhaustion
+        expr: hikaricp_active_connections >= 20
+        for: 30s
+        labels:
+          severity: SEV_1
+          service: payment-service
+        annotations:
+          summary: "HikariCP Database Connection Pool Exhaustion"
+          description: "Active connections reached pool limit (20) with queue lockups."
+
+      - alert: HighLatencyP99
+        expr: histogram_quantile(0.99, sum(rate(payment_service_latency_seconds_bucket[2m])) by (le)) > 2.0
+        for: 30s
+        labels:
+          severity: SEV_2
+          service: payment-service
+        annotations:
+          summary: "P99 latency exceeding 2.0s SLA"
+          description: "P99 latency escalated to {{ $value }}s."
+
+      - alert: KafkaConsumerGroupLag
+        expr: kafka_consumergroup_lag > 5000
+        for: 1m
+        labels:
+          severity: SEV_3
+          service: notification-service
+        annotations:
+          summary: "Notification Service Kafka consumer lag building up"
+          description: "Consumer lag is at {{ $value }} messages."
