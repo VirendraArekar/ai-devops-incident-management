@@ -1,0 +1,236 @@
+services:
+  # ===========================================================================
+  # CORE INFRASTRUCTURE
+  # ===========================================================================
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: devops-postgres
+    environment:
+      POSTGRES_DB: devops_incident_db
+      POSTGRES_USER: devops_user
+      POSTGRES_PASSWORD: devops_password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U devops_user -d devops_incident_db || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    networks:
+      - devops-net
+
+  redis:
+    image: redis:7-alpine
+    container_name: devops-redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - devops-net
+
+  kafka:
+    image: apache/kafka:3.7.0
+    container_name: devops-kafka
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_NUM_PARTITIONS: 3
+    ports:
+      - "9092:9092"
+    networks:
+      - devops-net
+
+  # ===========================================================================
+  # TELEMETRY & OBSERVABILITY
+  # ===========================================================================
+  prometheus:
+    image: prom/prometheus:v2.51.0
+    container_name: devops-prometheus
+    volumes:
+      - ./deployments/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+      - ./deployments/prometheus/alert_rules.yml:/etc/prometheus/alert_rules.yml
+    ports:
+      - "9090:9090"
+    networks:
+      - devops-net
+
+  loki:
+    image: grafana/loki:3.0.0
+    container_name: devops-loki
+    volumes:
+      - ./deployments/loki/loki-config.yml:/etc/loki/local-config.yaml
+    ports:
+      - "3100:3100"
+    networks:
+      - devops-net
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.55
+    container_name: devops-jaeger
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+    ports:
+      - "16686:16686" # Jaeger Web UI
+      - "4317:4317"   # OTLP gRPC receiver
+      - "4318:4318"   # OTLP HTTP receiver
+    networks:
+      - devops-net
+
+  grafana:
+    image: grafana/grafana:10.4.0
+    container_name: devops-grafana
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - ./deployments/grafana/provisioning/datasources:/etc/grafana/provisioning/datasources
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+      - loki
+      - jaeger
+    networks:
+      - devops-net
+
+  # ===========================================================================
+  # APPLICATION SERVICES
+  # ===========================================================================
+  ai-engine:
+    build:
+      context: ./ai-engine
+      dockerfile: Dockerfile
+    container_name: devops-ai-engine
+    environment:
+      - PORT=8000
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=devops_incident_db
+      - POSTGRES_USER=devops_user
+      - POSTGRES_PASSWORD=devops_password
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - devops-net
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: devops-backend
+    environment:
+      - SPRING_DATASOURCE_URL=jdbc:postgresql://postgres:5432/devops_incident_db
+      - SPRING_DATASOURCE_USERNAME=devops_user
+      - SPRING_DATASOURCE_PASSWORD=devops_password
+      - SPRING_DATA_REDIS_HOST=redis
+      - SPRING_DATA_REDIS_PORT=6379
+      - SPRING_KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - AI_ENGINE_URL=http://ai-engine:8000
+      - MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE=*
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_started
+      ai-engine:
+        condition: service_started
+    networks:
+      - devops-net
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: devops-frontend
+    ports:
+      - "5173:80"
+    depends_on:
+      - backend
+    networks:
+      - devops-net
+
+  # ===========================================================================
+  # DEMO MICROSERVICES & FAULT TARGETS
+  # ===========================================================================
+  user-service:
+    build:
+      context: .
+      dockerfile: demo-services/Dockerfile.user
+    container_name: devops-user-service
+    ports:
+      - "8081:8081"
+    networks:
+      - devops-net
+
+  order-service:
+    build:
+      context: .
+      dockerfile: demo-services/Dockerfile.order
+    container_name: devops-order-service
+    environment:
+      - USER_SERVICE_URL=http://user-service:8081
+      - PAYMENT_SERVICE_URL=http://payment-service:8083
+    ports:
+      - "8082:8082"
+    depends_on:
+      - user-service
+      - payment-service
+    networks:
+      - devops-net
+
+  payment-service:
+    build:
+      context: .
+      dockerfile: demo-services/Dockerfile.payment
+    container_name: devops-payment-service
+    environment:
+      - NOTIFICATION_SERVICE_URL=http://notification-service:8084
+    ports:
+      - "8083:8083"
+    depends_on:
+      - notification-service
+    networks:
+      - devops-net
+
+  notification-service:
+    build:
+      context: .
+      dockerfile: demo-services/Dockerfile.notification
+    container_name: devops-notification-service
+    ports:
+      - "8084:8084"
+    networks:
+      - devops-net
+
+networks:
+  devops-net:
+    driver: bridge
+
+volumes:
+  postgres_data:

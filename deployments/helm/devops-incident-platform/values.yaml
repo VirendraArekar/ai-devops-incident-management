@@ -1,0 +1,50 @@
+replicaCount: 2
+
+image:
+  repository: devops-platform
+  pullPolicy: IfNotPresent
+  tag: "1.0.0"
+
+service:
+  type: ClusterIP
+  port: 8080
+
+ingress:
+  enabled: true
+  className: "nginx"
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+  hosts:
+    - host: devops.enterprise.internal
+      paths:
+        - path: /
+          pathType: Prefix
+
+resources:
+  backend:
+    limits:
+      cpu: 2000m
+      memory: 2048Mi
+    requests:
+      cpu: 500m
+      memory: 512Mi
+  aiEngine:
+    limits:
+      cpu: 1500m
+      memory: 1536Mi
+    requests:
+      cpu: 300m
+      memory: 512Mi
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 75
+  targetMemoryUtilizationPercentage: 80
+
+database:
+  host: postgres-service
+  port: 5432
+  name: devops_incident_db
+  user: devops_user
